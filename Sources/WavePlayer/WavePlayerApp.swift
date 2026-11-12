@@ -65,6 +65,10 @@ import UniformTypeIdentifiers
         if audio.isPlaying { audio.pause() } else { if audio.currentTime >= audio.duration - 0.05 { audio.currentTime = 0 }; audio.play() }
         objectWillChange.send()
     }
+    func skip(_ seconds: Double) {
+        guard let audio, audio.duration > 0 else { return }
+        seek((audio.currentTime + seconds) / audio.duration)
+    }
     func seek(_ fraction: Double) { audio?.currentTime = max(0, min(1, fraction)) * (audio?.duration ?? 0); time = audio?.currentTime ?? 0 }
 }
 func timestamp(_ value: Double) -> String { String(format: "%02d:%02d", Int(max(0,value))/60, Int(max(0,value))%60) }
@@ -113,6 +117,7 @@ struct ContentView: View {
     @State var span = 1.0
     @State var start = 0.0
     @State var follow = true
+    @State var keyMonitor: Any?
     func zoom(_ factor: Double) {
         let duration = player.audio?.duration ?? 0
         guard duration > 0 else { return }
@@ -129,7 +134,7 @@ struct ContentView: View {
                 Button("전체 보기") { span = 1; start = 0 }
                 Text("\(Int((1/span).rounded()))× 확대").foregroundStyle(.secondary)
                 Spacer()
-                Toggle("따라가기", isOn: $follow).toggleStyle(.switch)
+                Toggle("따라가기", isOn: $follow).toggleStyle(.switch).help("따라가기 켜기 / 끄기 (F)")
             }
             GeometryReader { geo in
                 let duration = player.audio?.duration ?? 0
@@ -178,15 +183,18 @@ struct ContentView: View {
                             let high = min(values.count, Int(Double(x+1)/size.width*Double(values.count))+1)
                             let peak = low < high ? values[low..<high].max() ?? 0 : 0
                             let h = max(1,CGFloat(peak)*size.height)
-                            context.fill(Path(CGRect(x: CGFloat(x), y: (size.height-h)/2,width: 1,height: h)),with: .color(.gray))
+                            context.fill(Path(CGRect(x: CGFloat(x), y: (size.height-h)/2,width: 1,height: h)),with: .color(Double(x) / max(1, size.width) <= player.time / max(0.001, player.audio?.duration ?? 0) ? .cyan : .gray))
                         }
                     }
                     Rectangle().fill(.cyan.opacity(0.15)).overlay(Rectangle().stroke(.cyan)).frame(width: geo.size.width*span).offset(x: geo.size.width*start)
+                    Rectangle().fill(.white).frame(width: 2).offset(x: min(max(0, geo.size.width - 2), geo.size.width * player.time / max(0.001, player.audio?.duration ?? 0))).allowsHitTesting(false)
                 }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in follow = false; start = max(0,min(1-span,value.location.x/geo.size.width-span/2)) })
             }.frame(height: 40)
             HStack { Text("00:00"); Spacer(); Text(timestamp(player.audio?.duration ?? 0)) }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            HStack(spacing: 20) {
+            HStack(spacing: 12) {
+                Button { player.skip(-5) } label: { Image(systemName: "gobackward.5") }.help("5초 전 (←)").disabled(player.audio == nil)
                 Button { player.toggle() } label: { Image(systemName: player.audio?.isPlaying == true ? "pause.fill" : "play.fill").font(.title).frame(width: 48,height: 40) }.keyboardShortcut(.space, modifiers: []).disabled(player.audio == nil)
+                Button { player.skip(5) } label: { Image(systemName: "goforward.5") }.help("5초 후 (→)").disabled(player.audio == nil)
                 Text("\(timestamp(drag.map { $0 * (player.audio?.duration ?? 0) } ?? player.time)) / \(timestamp(player.audio?.duration ?? 0))").monospacedDigit()
                 Picker("배속", selection: $player.rate) {
                     ForEach([Float(0.25),0.5,0.75,1], id: \.self) { rate in Text(String(format: "%g×",rate)).tag(rate) }
@@ -195,6 +203,25 @@ struct ContentView: View {
                 Slider(value: Binding(get: { Double(player.audio?.volume ?? 1) }, set: { player.audio?.volume = Float($0); player.objectWillChange.send() }), in: 0...1).frame(width: 130)
             }
         }.padding(32).frame(minWidth: 720,minHeight: 440).preferredColorScheme(.dark)
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard NSApp.keyWindow?.title == "WavePlayer",
+                      NSApp.keyWindow?.attachedSheet == nil,
+                      !(NSApp.keyWindow?.firstResponder is NSTextView),
+                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+                switch event.keyCode {
+                case 123: player.skip(-5)
+                case 124: player.skip(5)
+                case 3: follow.toggle()
+                default: return event
+                }
+                return nil
+            }
+        }
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
         .onChange(of: player.name) { _, _ in span = 1; start = 0; follow = true }
         .onChange(of: follow) { _, enabled in
             if enabled, let duration = player.audio?.duration, duration > 0 {
