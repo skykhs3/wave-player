@@ -77,14 +77,16 @@ struct WaveformMouseInput: NSViewRepresentable {
     var seek: (Double, Bool) -> Void
     var pan: (Double) -> Void
     var hover: (Double?) -> Void
+    var doubleClick: (Double) -> Void
     func makeNSView(context: Context) -> MouseView { MouseView() }
     func updateNSView(_ view: MouseView, context: Context) {
-        view.seek = seek; view.pan = pan; view.hover = hover
+        view.seek = seek; view.pan = pan; view.hover = hover; view.doubleClick = doubleClick
     }
     final class MouseView: NSView {
         var seek: ((Double, Bool) -> Void)?
         var pan: ((Double) -> Void)?
         var hover: ((Double?) -> Void)?
+        var doubleClick: ((Double) -> Void)?
         var lastX: CGFloat = 0
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -94,7 +96,10 @@ struct WaveformMouseInput: NSViewRepresentable {
         func fraction(_ event: NSEvent) -> Double {
             max(0, min(1, convert(event.locationInWindow, from: nil).x / max(1, bounds.width)))
         }
-        override func mouseDown(with event: NSEvent) { seek?(fraction(event), false) }
+        override func mouseDown(with event: NSEvent) {
+            seek?(fraction(event), false)
+            if event.clickCount == 2 { doubleClick?(fraction(event)) }
+        }
         override func mouseDragged(with event: NSEvent) { seek?(fraction(event), false) }
         override func mouseUp(with event: NSEvent) { seek?(fraction(event), true) }
         override func rightMouseDown(with event: NSEvent) {
@@ -169,8 +174,12 @@ struct ContentView: View {
                         guard span < 1 else { return }
                         follow = false
                         start = max(0, min(1 - span, start + delta * span))
-                    }, hover: { hover = $0 })
-                    .help("좌클릭: 재생 위치 이동 · 우클릭 드래그: 파형 화면 이동")
+                    }, hover: { hover = $0 }, doubleClick: { fraction in
+                        player.seek(start + fraction * span)
+                        player.audio?.play()
+                        player.objectWillChange.send()
+                    })
+                    .help("좌클릭: 재생 위치 이동 · 더블클릭: 해당 위치부터 재생 · 우클릭 드래그: 파형 화면 이동")
                 }
                 .overlay(alignment: .topLeading) { if let hover { Text(timestamp((start + hover * span) * duration)).font(.caption.monospacedDigit()).padding(6).background(.black.opacity(0.8)).allowsHitTesting(false).offset(x: min(geo.size.width-55,hover*geo.size.width)) } }
             }.frame(minHeight: 200)
@@ -189,6 +198,8 @@ struct ContentView: View {
                     Rectangle().fill(.cyan.opacity(0.15)).overlay(Rectangle().stroke(.cyan)).frame(width: geo.size.width*span).offset(x: geo.size.width*start)
                     Rectangle().fill(.white).frame(width: 2).offset(x: min(max(0, geo.size.width - 2), geo.size.width * player.time / max(0.001, player.audio?.duration ?? 0))).allowsHitTesting(false)
                 }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in follow = false; start = max(0,min(1-span,value.location.x/geo.size.width-span/2)) })
+                .simultaneousGesture(TapGesture(count: 2).onEnded { span = 1; start = 0 })
+                .help("클릭 / 드래그: 표시 구간 이동 · 더블클릭: 전체 보기")
             }.frame(height: 40)
             HStack { Text("00:00"); Spacer(); Text(timestamp(player.audio?.duration ?? 0)) }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             HStack(spacing: 12) {
